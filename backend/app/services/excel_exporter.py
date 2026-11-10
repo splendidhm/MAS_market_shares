@@ -26,16 +26,22 @@ def create_food_excel(db, start, end, category="", company="", product=""):
     from fastapi import HTTPException
     from app.services.food_report import report
 
+    from app.services.net_sales import NetSales
+
+    net = NetSales(start, end)
     columns = {}
     monthly = {}
     with TemporaryFile(mode="w+t", encoding="utf-8") as records:
         def collect(row):
             columns.update(dict.fromkeys(row))
-            key = (row["dlvrReqRcptDate"][:7], row.get("dtilPrdctClsfcNoNm") or row.get("prdctClsfcNoNm") or "")
+            month = row["dlvrReqRcptDate"].replace("-", "")[:6]
+            key = (month[:4] + "-" + month[4:], row.get("dtilPrdctClsfcNoNm") or row.get("prdctClsfcNoNm") or "")
             value = row.get("incdecAmt")
             if value in (None, ""):
                 value = row.get("prdctAmt") or 0
-            monthly[key] = monthly.get(key, 0) + int(str(value).replace(",", ""))
+            amount = int(str(value).replace(",", ""))
+            monthly[key] = monthly.get(key, 0) + amount
+            net.add(row, month, amount)
             records.write(json.dumps(row, ensure_ascii=False) + "\n")
 
         result = report(db, start, end, category, company, product, on_record=collect)
@@ -45,8 +51,11 @@ def create_food_excel(db, start, end, category="", company="", product=""):
         try:
             with xlsxwriter.Workbook(output, {"constant_memory": True, "strings_to_urls": False,
                                              "strings_to_formulas": False, "use_zip64": True}) as book:
+                titles = ("업체별", "업체별품목", "품목별", "식품원천내역", "월별정제매출", "월별집계")
+                sheets = {title: book.add_worksheet(title) for title in titles}
+
                 def sheet_rows(title, headers, rows):
-                    sheet = book.add_worksheet(title)
+                    sheet = sheets[title]
                     sheet.write_row(0, 0, headers)
                     for index, values in enumerate(rows):
                         offset = index % 1048575
@@ -71,6 +80,7 @@ def create_food_excel(db, start, end, category="", company="", product=""):
                         row = json.loads(line)
                         yield [row.get(key) for key in keys]
                 sheet_rows("식품원천내역", keys, raw_values())
+                net.write(book, sheets["월별정제매출"])
             output.seek(0)
             return output
         except BaseException:
