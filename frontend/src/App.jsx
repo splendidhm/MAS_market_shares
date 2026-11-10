@@ -27,6 +27,12 @@ export default function App() {
   const [rows, setRows] = useState([]);
   const [chartRows, setChartRows] = useState([]);
   const [totalAmount, setTotalAmount] = useState(0);
+  const [categories, setCategories] = useState([]);
+  const [itemRows, setItemRows] = useState([]);
+  const [productPage, setProductPage] = useState(0);
+  const [products, setProducts] = useState([]);
+  const [coverage, setCoverage] = useState(null);
+  const [progress, setProgress] = useState("");
   const [cacheHit, setCacheHit] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -59,8 +65,20 @@ export default function App() {
     loadUsage();
   }, []);
 
+  useEffect(() => {
+    setCoverage(null);
+    setRows([]);
+    setProducts([]);
+    setItemRows([]);
+    setProductPage(0);
+    setChartRows([]);
+    setWarning("");
+    setError("");
+  }, [filters.start_date, filters.end_date, filters.category, filters.product_name, filters.company]);
+
   const onSearch = async () => {
     setLoading(true);
+    setWarning("");
     setError("");
     try {
       const result = await fetchMarketShare(filters);
@@ -76,6 +94,11 @@ export default function App() {
         share: row.share,
       }));
       setRows(normalizedRows);
+      setProducts(result.product_rows || []);
+      setItemRows(result.item_rows || []);
+      setProductPage(0);
+      if (result.complete && !filters.category) setCategories(result.categories || []);
+      setCoverage(result.complete);
       setChartRows(normalizedChart);
       setTotalAmount(result.total_amount || 0);
       setCacheHit(Boolean(result.cache_hit));
@@ -84,6 +107,10 @@ export default function App() {
       const message = e?.response?.data?.detail || "조회 중 오류가 발생했습니다.";
       setError(message);
       setRows([]);
+      setProducts([]);
+    setItemRows([]);
+    setProductPage(0);
+      setCoverage(null);
       setChartRows([]);
       setTotalAmount(0);
     } finally {
@@ -96,19 +123,23 @@ export default function App() {
   };
 
   const onSync = async () => {
+    if (syncing) return;
     setSyncing(true);
+    setProgress("첫 페이지 확인 중");
     setError("");
     setWarning("");
     try {
-      const syncResult = await syncDashboardCache(filters);
-      if (syncResult?.warning_message) {
-        setWarning(syncResult.warning_message);
-      }
+      let result;
+      do {
+        result = await syncDashboardCache({...filters, refresh: !result && filters.refresh});
+        setProgress(result.progress);
+      } while (!result.complete);
       await loadUsage();
       await onSearch();
     } catch (e) {
       const message = e?.response?.data?.detail || "DB 동기화 중 오류가 발생했습니다.";
       setError(message);
+      await loadUsage();
     } finally {
       setSyncing(false);
     }
@@ -116,17 +147,25 @@ export default function App() {
 
   const statusMessage = useMemo(() => {
     if (loading) return "데이터 조회 중...";
-    if (syncing) return "DB 동기화 중...";
+    if (syncing) return progress || "DB 동기화 중...";
     if (warning) return warning;
     if (error) return `오류: ${error}`;
-    if (!rows.length) return "DB 데이터가 없습니다. 먼저 'DB 동기화'를 실행해주세요.";
+    if (coverage === false) return "선택 기간·품목의 수집이 필요합니다. DB 동기화를 누르면 마지막 저장 페이지부터 이어받습니다.";
+    if (coverage === null) return "기간과 식품을 선택한 뒤 조회하세요.";
+    if (!rows.length) return "수집 완료 · 선택한 조건의 식품 납품내역이 없습니다.";
     return cacheHit ? "DB 캐시 데이터 조회 완료" : "DB 조회 완료";
-  }, [loading, syncing, warning, error, rows.length, cacheHit]);
+  }, [loading, syncing, warning, error, rows.length, cacheHit, coverage, progress]);
+
+  const itemOnly = activeMenu === "품목별 점유율 현황";
+  const displayProducts = itemOnly ? itemRows : products;
+  const pageSize = 50;
+  const lastPage = Math.max(0, Math.ceil(displayProducts.length / pageSize) - 1);
+  const visiblePage = Math.min(productPage, lastPage);
 
   return (
     <div className="max-w-[1460px] mx-auto px-4 py-6">
       <div className="flex flex-col md:flex-row gap-4">
-        <SidebarMenu activeMenu={activeMenu} onSelect={setActiveMenu} />
+        <SidebarMenu activeMenu={activeMenu} onSelect={menu => { setActiveMenu(menu); setProductPage(0); }} />
 
         <main className="flex-1 space-y-4">
           <header className="bg-white border border-brand-200 rounded-xl p-4 shadow-sm text-center">
@@ -144,24 +183,36 @@ export default function App() {
             {" · "}남은 호출: {usage.remaining_calls}
           </div>
 
-          <Filters
+          <fieldset disabled={syncing || loading}><Filters
+            categoriesFound={categories}
             filters={filters}
             setFilters={setFilters}
             onSearch={onSearch}
             onExcel={onExcel}
             onSync={onSync}
-          />
+          /></fieldset>
 
           <div className="bg-brand-100 text-[#0c4a6e] rounded-lg px-4 py-2 text-sm font-semibold">
             {statusMessage}
           </div>
 
           <div className="bg-white border border-brand-200 rounded-xl p-4 shadow-sm text-brand-700 font-semibold">
-            전체 납품금액 합계: {Number(totalAmount).toLocaleString()} 원
+            식품 납품요구 순액(증감 반영): {coverage === true ? Number(totalAmount).toLocaleString() + " 원" : "—"}
           </div>
 
           <TopManufacturersChart data={chartRows} />
           <MarketShareTable rows={rows} />
+          <section className="bg-white border rounded-xl p-4 overflow-auto">
+            <h2 className="font-semibold mb-2">{itemOnly ? "품목별 납품액" : "업체별 품목 납품액"}</h2>
+            <table className="w-full text-sm"><thead><tr>{(itemOnly ? ["물품식별번호","품목","납품요구 순액(원)"] : ["업체","물품식별번호","품목","납품요구 순액(원)"]).map(h => <th key={h} className="text-left p-2">{h}</th>)}</tr></thead>
+              <tbody>{displayProducts.slice(visiblePage * pageSize, (visiblePage + 1) * pageSize).map(r => <tr key={JSON.stringify([r.company,r.code,r.product])} className="border-t">{!itemOnly && <td>{r.company}</td>}<td>{r.code}</td><td>{r.product}</td><td>{r.amount.toLocaleString()}</td></tr>)}</tbody>
+            </table>
+            {lastPage > 0 && <div className="flex gap-3 items-center mt-3 text-sm">
+              <button disabled={visiblePage === 0} onClick={() => setProductPage(visiblePage - 1)}>이전</button>
+              <span>{visiblePage + 1} / {lastPage + 1} · {displayProducts.length.toLocaleString()}건</span>
+              <button disabled={visiblePage === lastPage} onClick={() => setProductPage(visiblePage + 1)}>다음</button>
+            </div>}
+          </section>
         </main>
       </div>
     </div>

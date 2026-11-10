@@ -33,7 +33,7 @@ def process_market_share(
 
     available_category_cols = [c for c in category_col_candidates if c in df.columns]
     available_product_cols = [c for c in product_col_candidates if c in df.columns]
-    work = df[[company_col, amount_col] + available_category_cols + available_product_cols].copy()
+    work = df[list(dict.fromkeys([company_col, amount_col] + available_category_cols + available_product_cols))].copy()
     work = work.rename(columns={company_col: "company", amount_col: "amount"})
     work["company"] = work["company"].astype(str).str.strip()
     work["amount"] = (
@@ -53,20 +53,20 @@ def process_market_share(
             mask = False
             lowered = keyword.lower()
             for col in available_category_cols:
-                mask = mask | work[col].astype(str).str.lower().str.contains(lowered, na=False)
+                mask = mask | work[col].astype(str).str.lower().str.contains(lowered, na=False, regex=False)
             work = work[mask]
 
     # 프론트 company 파라미터로 업체명 부분검색 지원
     if company_filter:
         keyword = company_filter.strip().lower()
-        work = work[work["company"].str.lower().str.contains(keyword, na=False)]
+        work = work[work["company"].str.lower().str.contains(keyword, na=False, regex=False)]
 
     # 프론트 productName 파라미터로 제품명 부분검색 지원
     if product_filter and available_product_cols:
         lowered = product_filter.strip().lower()
         mask = False
         for col in available_product_cols:
-            mask = mask | work[col].astype(str).str.lower().str.contains(lowered, na=False)
+            mask = mask | work[col].astype(str).str.lower().str.contains(lowered, na=False, regex=False)
         work = work[mask]
 
     if work.empty:

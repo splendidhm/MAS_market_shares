@@ -33,7 +33,9 @@ export async function syncDashboardCache(params) {
   const query = {
     startDate: toYYYYMMDD(params.start_date),
     endDate: toYYYYMMDD(params.end_date),
-    force: false,
+    category: params.category || "",
+    step: true,
+    force: Boolean(params.refresh),
   };
   const { data } = await axios.post(`${API_BASE}/dashboard/sync`, null, { params: query });
   return data;

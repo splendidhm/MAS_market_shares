@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import calendar
 import os
-import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -55,16 +52,6 @@ class G2BApiClient:
         # 오퍼레이션명을 바꾸는 경우 .env 의 G2B_OPERATION 또는 OPERATION 수정
         operation = os.getenv("G2B_OPERATION", "").strip() or os.getenv("OPERATION", "").strip() or "getDlvrReqDtlInfoList"
         self.base_url = self._normalize_endpoint(raw_base_url, operation)
-        # getDlvrReqDtlInfoList에서 필수인 조회구분 값 (기본 1)
-        self.inqry_div = os.getenv("G2B_INQRY_DIV", "").strip() or os.getenv("INQRY_DIV", "").strip() or "1"
-        # 요청 간격(초). 429 방지를 위해 1.5초 이상 권장.
-        self.request_sleep_seconds = float(
-            os.getenv("G2B_REQUEST_SLEEP_SECONDS", "").strip()
-            or os.getenv("REQUEST_SLEEP_SECONDS", "").strip()
-            or "1.5"
-        )
-        # 본 오퍼레이션은 페이지당 건수가 작아 상한을 두지 않으면 조회 시간이 과도해질 수 있다.
-        self.max_pages = int(os.getenv("G2B_MAX_PAGES", "").strip() or "10")
         self.timeout = settings.api_timeout_seconds
 
     @staticmethod
@@ -77,107 +64,34 @@ class G2BApiClient:
             return f"{base}/{operation}"
         return base
 
-    def fetch_sales_data(
-        self,
-        start_month: str,
-        end_month: str,
-        category_filter: str = "",
-        request_guard: Optional[Callable[[], None]] = None,
-        request_record: Optional[Callable[[], None]] = None,
-    ) -> List[Dict[str, Any]]:
+    def fetch_page(self, start, end, page, field="", keyword=""):
         if not self.service_key:
-            raise G2BAuthError("G2B_SERVICE_KEY(또는 SERVICE_KEY)가 설정되지 않았습니다.")
-
-        all_items: List[Dict[str, Any]] = []
-        page_no = 1
-        # 조달청 API 트래픽 제한을 고려해 기본 페이지 크기를 1000으로 사용
-        num_of_rows = 1000
-
-        while True:
-            if page_no > self.max_pages:
-                break
-            inqry_bgn_date, inqry_end_date = self._to_inqry_dates(start_month, end_month)
-            params = {
-                "serviceKey": self.service_key,
-                "pageNo": page_no,
-                "numOfRows": num_of_rows,
-                "type": "json",
-                # getDlvrReqDtlInfoList 필수 파라미터
-                "inqryDiv": self.inqry_div,
-                "inqryBgnDate": inqry_bgn_date,
-                "inqryEndDate": inqry_end_date,
-            }
-            # 품목분류코드(숫자)가 들어오면 서버 측 필터를 우선 적용해 호출량을 줄인다.
-            if category_filter and category_filter.strip().isdigit():
-                params["prdctClsfcNo"] = category_filter.strip()
-
-            response = None
-            backoff_seconds = [5, 10, 20]
-            for retry in range(4):
-                try:
-                    if request_guard:
-                        request_guard()
-                    response = requests.get(self.base_url, params=params, timeout=self.timeout)
-                    if request_record:
-                        request_record()
-                except requests.RequestException as exc:
-                    if retry == 3:
-                        raise G2BApiError(f"조달청 OpenAPI 호출 실패: {exc}") from exc
-                    time.sleep(1.0 * (retry + 1))
-                    continue
-                if response.status_code != 429:
-                    break
-                if retry == 3:
-                    raise G2BApiError("조달청 OpenAPI HTTP 오류: 429 (요청 제한 초과)")
-                time.sleep(backoff_seconds[retry])
-
-            if response is None:
-                raise G2BApiError("조달청 OpenAPI 호출 실패: 빈 응답")
-
+            raise G2BAuthError("조달청 서비스키가 필요합니다.")
+        params = dict(serviceKey=self.service_key, type="json", inqryDiv="1",
+                      inqryBgnDate=start, inqryEndDate=end, pageNo=page, numOfRows=999)
+        if field:
+            params[field] = keyword
+        try:
+            response = requests.get(self.base_url, params=params, timeout=(10, max(60, self.timeout)))
             if response.status_code in (401, 403):
-                raise G2BAuthError("인증키가 유효하지 않거나 활용신청이 승인되지 않았습니다.")
-            if response.status_code >= 400:
-                raise G2BApiError(f"조달청 OpenAPI HTTP 오류: {response.status_code}")
-
-            payload = response.json()
-            header = payload.get("response", {}).get("header", {})
-            result_code = str(header.get("resultCode", ""))
-            result_msg = str(header.get("resultMsg", ""))
-
-            if result_code and result_code != "00":
-                if "SERVICE KEY" in result_msg.upper() or result_code in {"30", "22"}:
-                    raise G2BAuthError(f"인증키 오류: {result_msg}")
-                raise G2BApiError(f"조달청 OpenAPI 오류({result_code}): {result_msg}")
-
-            body = payload.get("response", {}).get("body", {})
-            total_count = int(body.get("totalCount", 0) or 0)
-            items = body.get("items", [])
+                raise G2BAuthError("조달청 인증키 또는 활용 승인을 확인해주세요.")
+            if response.status_code == 429:
+                raise G2BRateLimitError("조달청 호출 한도에 도달했습니다. 이후 같은 조건으로 이어받을 수 있습니다.")
+            response.raise_for_status()
+            payload = response.json()["response"]
+            header = payload["header"]
+            if str(header["resultCode"]) != "00":
+                raise G2BApiError(f"조달청 응답 {header['resultCode']}: {header.get('resultMsg', '')}")
+            body = payload["body"]
+            total, size, number = (int(body[k]) for k in ("totalCount", "numOfRows", "pageNo"))
+            items = body.get("items") or []
             if isinstance(items, dict):
                 items = items.get("item", [])
-            if not isinstance(items, list):
-                items = []
-
-            if total_count <= 0:
-                break
-
-            all_items.extend(items)
-
-            if not items or len(all_items) >= total_count:
-                break
-
-            page_no += 1
-            time.sleep(self.request_sleep_seconds)
-
-        return all_items
-
-    @staticmethod
-    def _to_inqry_dates(start_month: str, end_month: str) -> tuple[str, str]:
-        # YYYYMMDD가 들어오면 그대로 사용, YYYYMM이면 월 경계일로 변환
-        if len(start_month) == 8 and len(end_month) == 8:
-            return start_month, end_month
-        s_year = int(start_month[:4])
-        s_month = int(start_month[4:6])
-        e_year = int(end_month[:4])
-        e_month = int(end_month[4:6])
-        last_day = calendar.monthrange(e_year, e_month)[1]
-        return f"{s_year:04d}{s_month:02d}01", f"{e_year:04d}{e_month:02d}{last_day:02d}"
+            if isinstance(items, dict):
+                items = [items]
+            if (not isinstance(items, list) or number != page or total < 0 or size <= 0
+                    or len(items) != min(size, max(0, total - (page - 1) * size))):
+                raise G2BApiError("조달청 페이지 건수가 일치하지 않습니다. 같은 페이지에서 재시도해주세요.")
+            return total, size, items
+        except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+            raise G2BApiError("조달청 응답을 읽지 못했습니다. 같은 조건으로 재시도해주세요.") from None

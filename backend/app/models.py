@@ -55,3 +55,23 @@ class ApiDailyUsage(Base):
     usage_date: Mapped[str] = mapped_column(String(10), unique=True, index=True)
     call_count: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class FoodBatch(Base):
+    __tablename__ = "food_batches"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scope: Mapped[str] = mapped_column(String(100), index=True)
+    start: Mapped[str] = mapped_column(String(8), index=True)
+    end: Mapped[str] = mapped_column(String(8))
+    next_page: Mapped[int] = mapped_column(default=1)
+    scanned: Mapped[int] = mapped_column(default=0)
+    expected: Mapped[int] = mapped_column(default=0)
+    complete: Mapped[int] = mapped_column(default=0)
+
+
+class FoodPage(Base):
+    __tablename__ = "food_pages"
+    batch_id: Mapped[int] = mapped_column(primary_key=True)
+    number: Mapped[int] = mapped_column(primary_key=True)
+    # Only food records are persisted, including all fields provided by PPS.
+    records: Mapped[str] = mapped_column(Text)

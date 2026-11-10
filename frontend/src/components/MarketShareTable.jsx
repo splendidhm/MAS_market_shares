@@ -2,7 +2,7 @@ import React from "react";
 
 const headers = [
   "순위",
-  "제조사",
+  "납품업체",
   "금액",
   "점유율",
   "누적점유율",
