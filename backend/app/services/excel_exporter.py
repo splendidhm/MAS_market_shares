@@ -1,7 +1,46 @@
 from io import BytesIO
 from typing import Dict, List
+from collections import defaultdict
+from datetime import datetime
+from decimal import Decimal
+import re
 
 import pandas as pd
+
+
+_SPEC_START = re.compile(r"^\s*\d[\d,.]*\s*(?:kg|mg|g|ml|l|ℓ|개|입|봉|팩|박스|캔|병|포|장|매|인분|세트)(?=\W|\d|$)", re.IGNORECASE)
+_MONEY_FORMAT = '#,##0;[Red](#,##0);0'
+
+
+def split_product_spec(description):
+    """Split the usual classification, maker, product, specification form."""
+    original = str(description or "").strip()
+    prefix = original.split(",", 2)
+    if len(prefix) != 3 or not all(part.strip() for part in prefix[:2]):
+        return original, ""
+    remainder = prefix[2].strip()
+    for match in re.finditer(r",\s*", remainder):
+        candidate = remainder[match.end():]
+        if _SPEC_START.match(candidate):
+            return remainder[:match.start()].strip(), candidate.strip()
+    return original, ""
+
+
+def _month_labels(start, end):
+    first = datetime.strptime(start, "%Y%m%d")
+    last = datetime.strptime(end, "%Y%m%d")
+    months = []
+    year, month = first.year, first.month
+    while (year, month) <= (last.year, last.month):
+        key = f"{year:04d}-{month:02d}"
+        label = f"{month}월" if first.year == last.year else key
+        months.append((key, label))
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return months
+
+
+def _excluding_vat(amount):
+    return float(Decimal(amount) * Decimal(10) / Decimal(11))
 
 
 def create_excel(table_rows: List[Dict], chart_rows: List[Dict]) -> BytesIO:
@@ -28,14 +67,26 @@ def create_food_excel(db, start, end, category="", company="", product=""):
 
     columns = {}
     monthly = {}
+    cleaned = defaultdict(lambda: defaultdict(int))
+    cleaned_totals = defaultdict(int)
+    months = _month_labels(start, end)
     with TemporaryFile(mode="w+t", encoding="utf-8") as records:
         def collect(row):
             columns.update(dict.fromkeys(row))
+            day = str(row["dlvrReqRcptDate"]).replace("-", "")
+            month = f"{day[:4]}-{day[4:6]}"
             key = (row["dlvrReqRcptDate"][:7], row.get("dtilPrdctClsfcNoNm") or row.get("prdctClsfcNoNm") or "")
             value = row.get("incdecAmt")
             if value in (None, ""):
                 value = row.get("prdctAmt") or 0
-            monthly[key] = monthly.get(key, 0) + int(str(value).replace(",", ""))
+            amount = int(str(value).replace(",", ""))
+            monthly[key] = monthly.get(key, 0) + amount
+            product_name, specification = split_product_spec(row.get("prdctIdntNoNm"))
+            identity = (str(row.get("corpNm") or "업체명 미제공"),
+                        str(row.get("dtilPrdctClsfcNoNm") or ""),
+                        str(row.get("prdctIdntNo") or ""), product_name, specification)
+            cleaned[identity][month] += amount
+            cleaned_totals[month] += amount
             records.write(json.dumps(row, ensure_ascii=False) + "\n")
 
         result = report(db, start, end, category, company, product, on_record=collect)
@@ -62,8 +113,6 @@ def create_food_excel(db, start, end, category="", company="", product=""):
                            ([r[k] for k in ("company","code","product","amount")] for r in result["product_rows"]))
                 sheet_rows("품목별", ["물품식별번호","물품규격명","납품요구 순액(원)"],
                            ([r[k] for k in ("code","product","amount")] for r in result["item_rows"]))
-                sheet_rows("월별집계", ["접수월","세부품명","납품요구 순액(원)"],
-                           ([*k, v] for k, v in sorted(monthly.items())))
                 records.seek(0)
                 keys = list(columns)
                 def raw_values():
@@ -71,6 +120,41 @@ def create_food_excel(db, start, end, category="", company="", product=""):
                         row = json.loads(line)
                         yield [row.get(key) for key in keys]
                 sheet_rows("식품원천내역", keys, raw_values())
+                money_format = book.add_format({"num_format": _MONEY_FORMAT})
+                title_format = book.add_format({"bold": True, "font_size": 15})
+                header_format = book.add_format({"bold": True, "bg_color": "#DDEBF7"})
+                text_format = book.add_format({"num_format": "@"})
+                labels = [label for _, label in months]
+                gross_total = sum(cleaned_totals.values())
+                sorted_rows = sorted(cleaned.items(), key=lambda item: (-sum(item[1].values()), item[0]))
+                max_data_rows = 1048576 - 4
+                for part, first_row in enumerate(range(0, max(len(sorted_rows), 1), max_data_rows), 1):
+                    name = "월별정제매출" if part == 1 else f"월별정제매출_{part}"
+                    sheet = book.add_worksheet(name)
+                    sheet.set_column(0, 0, 26)
+                    sheet.set_column(1, 1, 26)
+                    sheet.set_column(2, 2, 20, text_format)
+                    sheet.set_column(3, 3, 48)
+                    sheet.set_column(4, 4, 38)
+                    sheet.set_column(5, 5 + len(months), 19, money_format)
+                    sheet.write(0, 0, "다수공급자계약 월별 매출 분석 (부가세 별도)", title_format)
+                    sheet.write(1, 0, f"조회 기간: {start} ~ {end} | 계산 기준: 매출액 ÷ 1.1")
+                    sheet.write(2, 0, "전체 합계")
+                    sheet.write_number(2, 5, _excluding_vat(gross_total), money_format)
+                    for offset, (month, _) in enumerate(months, 6):
+                        sheet.write_number(2, offset, _excluding_vat(cleaned_totals[month]), money_format)
+                    sheet.write_row(3, 0, ["업체명", "세부품명", "물품식별번호", "제품명", "규격", "누계", *labels], header_format)
+                    portion = sorted_rows[first_row:first_row + max_data_rows]
+                    for offset, (identity, amounts) in enumerate(portion, 4):
+                        for col, value in enumerate(identity):
+                            sheet.write_string(offset, col, value)
+                        sheet.write_number(offset, 5, _excluding_vat(sum(amounts.values())), money_format)
+                        for col, (month, _) in enumerate(months, 6):
+                            sheet.write_number(offset, col, _excluding_vat(amounts.get(month, 0)), money_format)
+                    sheet.autofilter(3, 0, max(4, 3 + len(portion)), 5 + len(months))
+                    sheet.freeze_panes(4, 0)
+                sheet_rows("월별집계", ["접수월","세부품명","납품요구 순액(원)"],
+                           ([*k, v] for k, v in sorted(monthly.items())))
             output.seek(0)
             return output
         except BaseException:

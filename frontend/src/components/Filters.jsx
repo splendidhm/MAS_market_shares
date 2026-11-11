@@ -21,7 +21,7 @@ export default function Filters({ categoriesFound, filters, setFilters, onSearch
   return (
     <div className="bg-white border border-brand-200 rounded-xl p-4 shadow-sm space-y-4">
       <div className="flex flex-wrap items-center gap-3 text-sm">
-        <label>기간 단위 <select aria-label="기간 단위" value={filters.period || "range"} onChange={e => {
+        <label>기간 단위 <select aria-label="기간 단위" className="bg-white border border-brand-500 rounded px-2 py-1" value={filters.period || "range"} onChange={e => {
           const period = e.target.value;
           setFilters(prev => setPeriod(prev, period, prev.start_date));
         }}><option value="range">직접 지정</option><option value="day">일</option><option value="month">월</option><option value="year">년</option></select></label>
@@ -30,7 +30,7 @@ export default function Filters({ categoriesFound, filters, setFilters, onSearch
             const value = e.target.value + filters.start_date.slice(-6);
             setFilters(setPeriod(filters, filters.period, value));
           }} /></label>}
-        {filters.period === "month" && <label>월 <select aria-label="조회 월" value={filters.start_date.slice(5,7)}
+        {filters.period === "month" && <label>월 <select aria-label="조회 월" className="bg-white border border-brand-500 rounded px-2 py-1" value={filters.start_date.slice(5,7)}
           onChange={e => setFilters(setPeriod(filters, "month", filters.start_date.slice(0,5) + e.target.value))}>
           {Array.from({length: 12}, (_, i) => String(i+1).padStart(2,"0")).map(m => <option key={m} value={m}>{Number(m)}월</option>)}
         </select></label>}
@@ -82,7 +82,7 @@ export default function Filters({ categoriesFound, filters, setFilters, onSearch
           </button>
           <button
             onClick={onExcel}
-            className="flex-1 bg-white text-brand-700 border border-brand-200 rounded-lg px-3 py-2 font-semibold hover:bg-brand-100"
+            className="flex-1 bg-white text-brand-700 border border-brand-200 rounded-lg px-2 py-2 text-xs leading-none font-semibold whitespace-nowrap hover:bg-brand-100"
           >
             엑셀 다운로드
           </button>

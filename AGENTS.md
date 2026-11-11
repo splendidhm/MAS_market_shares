@@ -20,7 +20,7 @@
 - `backend/app/routers/dashboard.py`는 대시보드, 동기화, 사용량, 엑셀 API 라우터를 등록한다.
 - `backend/app/services/g2b_api.py`는 조달청 HTTP 요청을 담당한다. `fetch_page`는 페이지 번호와 페이지 크기, 전체 건수, 반환 건수를 검증한다.
 - `backend/app/services/food_report.py`는 식품 판정, 날짜 구간 분할, 페이지 재개, 품명 필터, 업체별·품목별 집계를 담당한다.
-- `backend/app/services/excel_exporter.py`는 대량 행을 메모리 제한 방식으로 업체별·품목별·월별·원천 시트에 작성한다.
+- `backend/app/services/excel_exporter.py`는 대량 원천 행을 임시 파일로 흘려 쓰고, 같은 필터 적용 행에서 월별정제매출을 집계해 엑셀에 작성한다.
 - `backend/app/models.py`의 `FoodBatch`와 `FoodPage`가 새 식품 수집기의 영속 상태다.
 - `backend/app/services/quota_service.py`는 날짜별 API 호출 수를 기록한다.
 
@@ -71,7 +71,8 @@ API 응답의 `pageNo`, `numOfRows`, `totalCount`, 실제 `items` 길이를 검�
 `GET /api/dashboard/excel`
 
 - 대시보드와 같은 입력을 사용한다.
-- 업체별, 업체별품목, 품목별, 월별집계, 식품원천내역 시트를 반환한다.
+- 업체별, 업체별품목, 품목별, 식품원천내역, 월별정제매출, 월별집계 순서로 시트를 반환한다.
+- 월별정제매출은 접수월의 `incdecAmt`(없으면 `prdctAmt`)를 업체·세부품명·물품식별번호·제품명·규격별로 먼저 합산한 후 10/11을 곱해 부가세 별도로 표시한다. 원천 행별로 반올림하지 않는다.
 
 `GET /api/dashboard/usage`
 

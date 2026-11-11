@@ -11,14 +11,37 @@ import {
 } from "./api/dashboardApi";
 
 const today = new Date();
-const defaultDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(
-  today.getDate()
+const defaultMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+const defaultStartDate = `${defaultMonth}-01`;
+const defaultEndDate = `${defaultMonth}-${String(
+  new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate()
 ).padStart(2, "0")}`;
+
+function ProductTable({ displayProducts, itemOnly = false, productPage, setPage }) {
+  const pageSize = 50;
+  const lastPage = Math.max(0, Math.ceil(displayProducts.length / pageSize) - 1);
+  const visiblePage = Math.min(productPage, lastPage);
+
+  return (
+    <section className="bg-white border rounded-xl p-4 overflow-auto">
+      <h2 className="font-semibold mb-2">{itemOnly ? "품목별 납품액" : "업체별 품목 납품액"}</h2>
+      <table className="w-full text-sm"><thead><tr>{(itemOnly ? ["물품식별번호","품목","납품요구 순액(원)"] : ["업체","물품식별번호","품목","납품요구 순액(원)"]).map(h => <th key={h} className="text-left p-2">{h}</th>)}</tr></thead>
+        <tbody>{displayProducts.slice(visiblePage * pageSize, (visiblePage + 1) * pageSize).map(r => <tr key={JSON.stringify([r.company,r.code,r.product])} className="border-t">{!itemOnly && <td>{r.company}</td>}<td>{r.code}</td><td>{r.product}</td><td>{r.amount.toLocaleString()}</td></tr>)}</tbody>
+      </table>
+      {lastPage > 0 && <div className="flex gap-3 items-center mt-3 text-sm">
+        <button disabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>이전</button>
+        <span>{visiblePage + 1} / {lastPage + 1} · {displayProducts.length.toLocaleString()}건</span>
+        <button disabled={visiblePage === lastPage} onClick={() => setPage(visiblePage + 1)}>다음</button>
+      </div>}
+    </section>
+  );
+}
 
 export default function App() {
   const [filters, setFilters] = useState({
-    start_date: defaultDate,
-    end_date: defaultDate,
+    period: "month",
+    start_date: defaultStartDate,
+    end_date: defaultEndDate,
     category: "",
     company: "",
     product_name: "",
@@ -30,6 +53,7 @@ export default function App() {
   const [categories, setCategories] = useState([]);
   const [itemRows, setItemRows] = useState([]);
   const [productPage, setProductPage] = useState(0);
+  const [itemPage, setItemPage] = useState(0);
   const [products, setProducts] = useState([]);
   const [coverage, setCoverage] = useState(null);
   const [progress, setProgress] = useState("");
@@ -43,7 +67,7 @@ export default function App() {
     daily_call_limit: 900,
     remaining_calls: 900,
   });
-  const [activeMenu, setActiveMenu] = useState("대시보드");
+  const [activeMenu, setActiveMenu] = useState("sales");
 
   const loadUsage = async () => {
     try {
@@ -71,6 +95,7 @@ export default function App() {
     setProducts([]);
     setItemRows([]);
     setProductPage(0);
+    setItemPage(0);
     setChartRows([]);
     setWarning("");
     setError("");
@@ -97,6 +122,7 @@ export default function App() {
       setProducts(result.product_rows || []);
       setItemRows(result.item_rows || []);
       setProductPage(0);
+      setItemPage(0);
       if (result.complete && !filters.category) setCategories(result.categories || []);
       setCoverage(result.complete);
       setChartRows(normalizedChart);
@@ -110,6 +136,7 @@ export default function App() {
       setProducts([]);
     setItemRows([]);
     setProductPage(0);
+    setItemPage(0);
       setCoverage(null);
       setChartRows([]);
       setTotalAmount(0);
@@ -156,27 +183,18 @@ export default function App() {
     return cacheHit ? "DB 캐시 데이터 조회 완료" : "DB 조회 완료";
   }, [loading, syncing, warning, error, rows.length, cacheHit, coverage, progress]);
 
-  const itemOnly = activeMenu === "품목별 점유율 현황";
-  const displayProducts = itemOnly ? itemRows : products;
-  const pageSize = 50;
-  const lastPage = Math.max(0, Math.ceil(displayProducts.length / pageSize) - 1);
-  const visiblePage = Math.min(productPage, lastPage);
-
   return (
     <div className="max-w-[1460px] mx-auto px-4 py-6">
       <div className="flex flex-col md:flex-row gap-4">
-        <SidebarMenu activeMenu={activeMenu} onSelect={menu => { setActiveMenu(menu); setProductPage(0); }} />
+        <SidebarMenu activeMenu={activeMenu} onSelect={setActiveMenu} />
 
         <main className="flex-1 space-y-4">
+          {activeMenu === "sales" && <>
           <header className="bg-white border border-brand-200 rounded-xl p-4 shadow-sm text-center">
             <p className="text-brand-700 text-lg font-semibold">
-              조달청 식품 품목 시장점유율 대시보드
+              제조사별 매출 현황 조회
             </p>
           </header>
-
-          <div className="bg-brand-50 border border-brand-200 rounded-lg px-4 py-2 text-sm text-brand-700 font-semibold">
-            현재 선택 메뉴: {activeMenu}
-          </div>
 
           <div className="bg-white border border-brand-200 rounded-lg px-4 py-2 text-sm text-brand-700 font-semibold">
             오늘 API 사용량: {usage.daily_call_count} / {usage.daily_call_limit}
@@ -202,17 +220,9 @@ export default function App() {
 
           <TopManufacturersChart data={chartRows} />
           <MarketShareTable rows={rows} />
-          <section className="bg-white border rounded-xl p-4 overflow-auto">
-            <h2 className="font-semibold mb-2">{itemOnly ? "품목별 납품액" : "업체별 품목 납품액"}</h2>
-            <table className="w-full text-sm"><thead><tr>{(itemOnly ? ["물품식별번호","품목","납품요구 순액(원)"] : ["업체","물품식별번호","품목","납품요구 순액(원)"]).map(h => <th key={h} className="text-left p-2">{h}</th>)}</tr></thead>
-              <tbody>{displayProducts.slice(visiblePage * pageSize, (visiblePage + 1) * pageSize).map(r => <tr key={JSON.stringify([r.company,r.code,r.product])} className="border-t">{!itemOnly && <td>{r.company}</td>}<td>{r.code}</td><td>{r.product}</td><td>{r.amount.toLocaleString()}</td></tr>)}</tbody>
-            </table>
-            {lastPage > 0 && <div className="flex gap-3 items-center mt-3 text-sm">
-              <button disabled={visiblePage === 0} onClick={() => setProductPage(visiblePage - 1)}>이전</button>
-              <span>{visiblePage + 1} / {lastPage + 1} · {displayProducts.length.toLocaleString()}건</span>
-              <button disabled={visiblePage === lastPage} onClick={() => setProductPage(visiblePage + 1)}>다음</button>
-            </div>}
-          </section>
+          <ProductTable displayProducts={products} productPage={productPage} setPage={setProductPage} />
+          <ProductTable displayProducts={itemRows} itemOnly productPage={itemPage} setPage={setItemPage} />
+          </>}
         </main>
       </div>
     </div>
