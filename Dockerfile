@@ -2,7 +2,8 @@ FROM node:22-alpine AS frontend
 WORKDIR /build
 COPY frontend/package*.json ./
 RUN npm ci
-COPY frontend/ ./
+COPY frontend/*.js frontend/index.html ./
+COPY frontend/src ./src
 RUN npm run build
 
 FROM python:3.12-slim
