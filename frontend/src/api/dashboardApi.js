@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_BASE = "http://localhost:8000/api";
+const API_BASE = import.meta.env.DEV ? "http://localhost:8000/api" : "/api";
 
 function toYYYYMMDD(dateValue) {
   return String(dateValue || "").replaceAll("-", "");

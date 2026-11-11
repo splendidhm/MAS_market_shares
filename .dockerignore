@@ -1,0 +1,13 @@
+**
+!Dockerfile
+!backend/
+!backend/requirements.txt
+!backend/app/
+!backend/app/**/
+!backend/app/**/*.py
+!frontend/
+!frontend/package*.json
+!frontend/*.js
+!frontend/index.html
+!frontend/src/
+!frontend/src/**

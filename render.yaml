@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: mas-market-shares
+    runtime: docker
+    plan: free
+    branch: master
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SERVICE_KEY
+        sync: false
+      - key: MAS_PASSWORD
+        generateValue: true
