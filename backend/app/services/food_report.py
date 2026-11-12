@@ -2,13 +2,14 @@
 import calendar
 import json
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import Lock
 from time import sleep
 
 from fastapi import HTTPException
 
-from app.models import FoodBatch, FoodPage
+from app.models import FoodBatch, FoodPage, RegistrationBatch, RegistrationPage
 from app.services.g2b_api import G2BApiClient, G2BApiError, G2BAuthError, G2BRateLimitError
 from app.services.quota_service import get_today_call_count, increment_today_call_count
 
@@ -35,6 +36,17 @@ GROUPS = {
 sync_lock = Lock()
 
 
+@dataclass(frozen=True)
+class FoodCollection:
+    batch_model: type
+    page_model: type
+    date_field: str
+
+
+DELIVERIES = FoodCollection(FoodBatch, FoodPage, "dlvrReqRcptDate")
+REGISTRATIONS = FoodCollection(RegistrationBatch, RegistrationPage, "rgstDt")
+
+
 def is_food(row):
     code = str(row.get("prdctClsfcNo") or "").strip()
     return code.startswith("50") and not code.startswith("5021")
@@ -47,7 +59,7 @@ def criterion(category):
     return PRESETS.get(category, ("prdctClsfcNoNm", category)) if category else ("", "")
 
 
-def windows(start, end):
+def parse_period(start, end):
     try:
         current = datetime.strptime(start, "%Y%m%d").date()
         last = datetime.strptime(end, "%Y%m%d").date()
@@ -55,6 +67,11 @@ def windows(start, end):
         raise HTTPException(400, "유효한 시작일과 종료일을 입력해주세요.")
     if current > last:
         raise HTTPException(400, "조회 기간을 확인해주세요.")
+    return current, last
+
+
+def windows(start, end):
+    current, last = parse_period(start, end)
     while current <= last:
         boundary = min(current.replace(day=calendar.monthrange(current.year, current.month)[1]), last)
         yield current.strftime("%Y%m%d"), boundary.strftime("%Y%m%d")
@@ -63,14 +80,16 @@ def windows(start, end):
         current = boundary + timedelta(days=1)
 
 
-def completed(db, start, end, category):
-    return db.query(FoodBatch).filter(
-        FoodBatch.start <= start, FoodBatch.end >= end,
-        FoodBatch.scope.in_(["", category]), FoodBatch.complete == 1
-    ).order_by(FoodBatch.id.desc()).first()
+def completed(db, start, end, category, source=DELIVERIES):
+    model = source.batch_model
+    return db.query(model).filter(
+        model.start <= start, model.end >= end,
+        model.scope.in_(["", category]), model.complete == 1
+    ).order_by(model.id.desc()).first()
 
 
-def sync_step(db, start, end, category, limit, refresh=False):
+def sync_step(db, start, end, category, limit, refresh=False, *, source=DELIVERIES):
+    batch_model, page_model = source.batch_model, source.page_model
     if category in GROUPS:
         category = ""
     # One page and its cursor are committed together. A second click or tab
@@ -80,21 +99,21 @@ def sync_step(db, start, end, category, limit, refresh=False):
         if refresh:
             # A refresh stages replacement batches alongside completed copies.
             for a, b in periods:
-                pending = db.query(FoodBatch).filter_by(start=a, end=b, scope=category, complete=0).first()
+                pending = db.query(batch_model).filter_by(start=a, end=b, scope=category, complete=0).first()
                 if not pending:
-                    db.add(FoodBatch(start=a, end=b, scope=category))
+                    db.add(batch_model(start=a, end=b, scope=category))
             db.commit()
         for idx, (a, b) in enumerate(periods):
-            batch = db.query(FoodBatch).filter_by(start=a, end=b, scope=category, complete=0).first()
-            if batch is None and completed(db, a, b, category):
+            batch = db.query(batch_model).filter_by(start=a, end=b, scope=category, complete=0).first()
+            if batch is None and completed(db, a, b, category, source):
                 continue
             if get_today_call_count(db) >= limit:
                 raise HTTPException(429, "일일 호출 한도에 도달했습니다. 같은 조건으로 다시 동기화하면 이어받습니다.")
             if batch is None:
-                batch = FoodBatch(start=a, end=b, scope=category)
+                batch = batch_model(start=a, end=b, scope=category)
                 db.add(batch)
                 db.commit()
-            client = G2BApiClient()
+            client = G2BApiClient(registration=source == REGISTRATIONS)
             field, keyword = criterion(category)
             try:
                 for attempt in range(3):
@@ -117,40 +136,68 @@ def sync_step(db, start, end, category, limit, refresh=False):
             except G2BApiError as exc:
                 raise HTTPException(502, str(exc))
             if batch.next_page > 1 and (batch.expected != total or (batch.next_page - 1) * size != batch.scanned):
-                db.query(FoodPage).filter_by(batch_id=batch.id).delete()
+                db.query(page_model).filter_by(batch_id=batch.id).delete()
                 batch.next_page, batch.scanned = 1, 0
                 db.commit()
-                return {"complete": False, "progress": f"{a}~{b} 원천 건수 변경으로 첫 페이지부터 다시 확인합니다."}
+                return {
+                    "complete": False,
+                    "progress": f"{a}~{b} 원천 건수 변경으로 첫 페이지부터 다시 확인합니다.",
+                    "period_start": a,
+                    "period_end": b,
+                    "period_index": idx + 1,
+                    "period_count": len(periods),
+                    "current_page": 0,
+                    "total_pages": max(1, (total + size - 1) // size),
+                    "scanned": 0,
+                    "expected": total,
+                    "page_rows": 0,
+                    "food_rows": 0,
+                }
             foods = [r for r in rows if is_food(r)]
             page = batch.next_page
-            db.add(FoodPage(batch_id=batch.id, number=page, records=json.dumps(foods, ensure_ascii=False)))
+            db.add(page_model(batch_id=batch.id, number=page, records=json.dumps(foods, ensure_ascii=False)))
             batch.next_page += 1
             batch.scanned += len(rows)
             batch.expected = total
             batch.complete = int(batch.scanned == total)
             db.commit()
-            return {"complete": bool(batch.complete and idx == len(periods)-1),
-                    "progress": f"{a}~{b} · {page}페이지 · 원천 {batch.scanned:,}/{total:,}건 확인"}
+            return {
+                "complete": bool(batch.complete and idx == len(periods)-1),
+                "progress": f"{a}~{b} · {page}페이지 · 원천 {batch.scanned:,}/{total:,}건 확인",
+                "period_start": a,
+                "period_end": b,
+                "period_index": idx + 1,
+                "period_count": len(periods),
+                "current_page": page,
+                "total_pages": max(1, (total + size - 1) // size),
+                "scanned": batch.scanned,
+                "expected": total,
+                "page_rows": len(rows),
+                "food_rows": len(foods),
+            }
         return {"complete": True, "progress": "선택 기간의 모든 페이지를 수집했습니다."}
 
 
-def report(db, start, end, category, company, product, on_record=None):
-    company_amount = defaultdict(int)
-    product_amount = defaultdict(int)
-    classifications = set()
+def covered_batches(db, source, start, end, category):
+    batches = []
     missing = []
-    field, keyword = criterion(category)
     for a, b in windows(start, end):
-        batch = completed(db, a, b, category)
+        batch = completed(db, a, b, category, source)
         if not batch:
             missing.append(f"{a}~{b}")
-            continue
-        pages = db.query(FoodPage.records).filter_by(batch_id=batch.id).order_by(FoodPage.number)
+        else:
+            batches.append((a, b, batch.id))
+    return batches, missing
+
+
+def food_records(db, source, batches, category, classifications):
+    field, keyword = criterion(category)
+    model = source.page_model
+    for a, b, batch_id in batches:
+        pages = db.query(model.records).filter_by(batch_id=batch_id).order_by(model.number)
         for (records,) in pages.yield_per(5):
             for row in json.loads(records):
-                day = str(row.get("dlvrReqRcptDate") or "").replace("-", "")[:8]
-                vendor = str(row.get("corpNm") or "업체명 미제공")
-                name = str(row.get("prdctIdntNoNm") or row.get("dtilPrdctClsfcNoNm") or "품목명 미제공")
+                day = str(row.get(source.date_field) or "").replace("-", "")[:8]
                 if not is_food(row):
                     continue
                 if not a <= day <= b:
@@ -167,19 +214,30 @@ def report(db, start, end, category, company, product, on_record=None):
                     continue
                 if category.startswith(("품명/", "세부품명/")) and keyword != row.get(field):
                     continue
-                if company.casefold() not in vendor.casefold() or product.casefold() not in name.casefold():
-                    continue
-                # Changes/cancellations contribute their signed delta on the receipt date.
-                value = row.get("incdecAmt")
-                if value in (None, ""):
-                    value = row.get("prdctAmt") or 0
-                amount = int(str(value).replace(",", ""))
-                company_amount[vendor] += amount
-                product_amount[(vendor, str(row.get("prdctIdntNo") or ""), name)] += amount
-                if on_record:
-                    on_record(row)
+                yield row
+
+
+def report(db, start, end, category, company, product, on_record=None):
+    batches, missing = covered_batches(db, DELIVERIES, start, end, category)
     if missing:
         return {"complete": False, "missing": missing, "company_rank": [], "product_rows": [], "chart_data": [], "total_amount": None}
+    company_amount = defaultdict(int)
+    product_amount = defaultdict(int)
+    classifications = set()
+    for row in food_records(db, DELIVERIES, batches, category, classifications):
+        vendor = str(row.get("corpNm") or "업체명 미제공")
+        name = str(row.get("prdctIdntNoNm") or row.get("dtilPrdctClsfcNoNm") or "품목명 미제공")
+        if company.casefold() not in vendor.casefold() or product.casefold() not in name.casefold():
+            continue
+        # Changes/cancellations contribute their signed delta on the receipt date.
+        value = row.get("incdecAmt")
+        if value in (None, ""):
+            value = row.get("prdctAmt") or 0
+        amount = int(str(value).replace(",", ""))
+        company_amount[vendor] += amount
+        product_amount[(vendor, str(row.get("prdctIdntNo") or ""), name)] += amount
+        if on_record:
+            on_record(row)
     total = sum(company_amount.values())
     ranks = []
     running = 0

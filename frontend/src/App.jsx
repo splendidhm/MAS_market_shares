@@ -3,6 +3,7 @@ import Filters from "./components/Filters";
 import MarketShareTable from "./components/MarketShareTable";
 import TopManufacturersChart from "./components/TopManufacturersChart";
 import SidebarMenu from "./components/SidebarMenu";
+import RegistrationPage from "./components/RegistrationPage";
 import {
   downloadExcel,
   fetchDashboardUsage,
@@ -188,11 +189,11 @@ export default function App() {
       <div className="flex flex-col md:flex-row gap-4">
         <SidebarMenu activeMenu={activeMenu} onSelect={setActiveMenu} />
 
-        <main className="flex-1 space-y-4">
+        <main className="min-w-0 flex-1 space-y-4">
           {activeMenu === "sales" && <>
           <header className="bg-white border border-brand-200 rounded-xl p-4 shadow-sm text-center">
             <p className="text-brand-700 text-lg font-semibold">
-              제조사별 매출 현황 조회
+              나라장터 매출 현황 조회
             </p>
           </header>
 
@@ -223,6 +224,10 @@ export default function App() {
           <ProductTable displayProducts={products} productPage={productPage} setPage={setProductPage} />
           <ProductTable displayProducts={itemRows} itemOnly productPage={itemPage} setPage={setItemPage} />
           </>}
+          <div hidden={activeMenu !== "registration"}>
+            <RegistrationPage startDate={defaultStartDate} endDate={defaultEndDate}
+              usage={usage} loadUsage={loadUsage} />
+          </div>
         </main>
       </div>
     </div>

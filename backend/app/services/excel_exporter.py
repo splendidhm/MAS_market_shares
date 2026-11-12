@@ -2,7 +2,7 @@ from io import BytesIO
 from typing import Dict, List
 from collections import defaultdict
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import re
 
 import pandas as pd
@@ -41,6 +41,14 @@ def _month_labels(start, end):
 
 def _excluding_vat(amount):
     return float(Decimal(amount) * Decimal(10) / Decimal(11))
+
+
+def _excel_number(value):
+    try:
+        number = Decimal(str(value or 0).replace(",", ""))
+    except InvalidOperation:
+        return 0
+    return int(number) if number == number.to_integral_value() else float(number)
 
 
 def create_excel(table_rows: List[Dict], chart_rows: List[Dict]) -> BytesIO:
@@ -155,6 +163,122 @@ def create_food_excel(db, start, end, category="", company="", product=""):
                     sheet.freeze_panes(4, 0)
                 sheet_rows("월별집계", ["접수월","세부품명","납품요구 순액(원)"],
                            ([*k, v] for k, v in sorted(monthly.items())))
+            output.seek(0)
+            return output
+        except BaseException:
+            output.close()
+            raise
+
+
+def create_registration_excel(db, start, end, category="", company="", product=""):
+    """Write filtered registration rows and their normalized product fields."""
+    import json
+    from tempfile import TemporaryFile
+
+    import xlsxwriter
+    from fastapi import HTTPException
+    from app.services.registrations import registration_records
+
+    records, missing, _ = registration_records(db, start, end, category, company, product)
+    if missing:
+        raise HTTPException(409, "선택 기간의 식품 품목등록 DB 동기화를 완료해주세요.")
+
+    columns = dict.fromkeys([
+        "rgstDt", "prdctClsfcNo", "prdctClsfcNoNm", "dtilPrdctClsfcNo",
+        "dtilPrdctClsfcNoNm", "prdctIdntNo", "prdctSpecNm", "cntrctCorpNm",
+        "prdctMakrNm", "cntrctPrceAmt", "prdctUnit", "shopngCntrctNo",
+        "shopngCntrctSno", "cntrctDate", "cntrctBgnDate", "cntrctEndDate",
+        "masYn", "regtCncelYn", "prodctCertList", "prdctImgUrl",
+    ])
+    monthly = defaultdict(int)
+    row_count = 0
+    with TemporaryFile(mode="w+t", encoding="utf-8") as raw_records:
+        for row in records:
+            columns.update(dict.fromkeys(row))
+            registered = str(row.get("rgstDt") or "").replace("-", "")
+            monthly[(registered[:6], str(row.get("dtilPrdctClsfcNoNm") or
+                                            row.get("prdctClsfcNoNm") or ""))] += 1
+            raw_records.write(json.dumps(row, ensure_ascii=False) + "\n")
+            row_count += 1
+
+        output = TemporaryFile()
+        try:
+            with xlsxwriter.Workbook(output, {"constant_memory": True, "strings_to_urls": False,
+                                             "strings_to_formulas": False, "use_zip64": True}) as book:
+                header_format = book.add_format({"bold": True, "bg_color": "#DDEBF7"})
+                money_format = book.add_format({"num_format": _MONEY_FORMAT})
+                text_format = book.add_format({"num_format": "@"})
+
+                cleaned_headers = [
+                    "등록일", "계약업체", "제조사", "품명", "세부품명", "물품식별번호",
+                    "제품명", "규격", "계약단가(원)", "단위", "쇼핑계약번호",
+                    "계약일", "계약시작일", "계약종료일", "다수공급자계약여부", "등록해지여부",
+                ]
+                max_data_rows = 1048575
+
+                def cleaned_sheet(part, first_row):
+                    name = "품목등록정제" if part == 1 else f"품목등록정제_{part}"
+                    sheet = book.add_worksheet(name)
+                    sheet.freeze_panes(1, 0)
+                    portion = min(max_data_rows, max(row_count - first_row, 0))
+                    sheet.autofilter(0, 0, max(portion, 1), 15)
+                    sheet.set_column(0, 0, 12)
+                    sheet.set_column(1, 4, 24)
+                    sheet.set_column(5, 5, 18, text_format)
+                    sheet.set_column(6, 6, 42)
+                    sheet.set_column(7, 7, 28)
+                    sheet.set_column(8, 8, 16, money_format)
+                    sheet.set_column(9, 9, 10)
+                    sheet.set_column(10, 10, 22, text_format)
+                    sheet.set_column(11, 13, 12)
+                    sheet.set_column(14, 15, 14)
+                    sheet.write_row(0, 0, cleaned_headers, header_format)
+                    return sheet
+
+                raw_records.seek(0)
+                cleaned = cleaned_sheet(1, 0)
+                for index, line in enumerate(raw_records):
+                    if index and index % max_data_rows == 0:
+                        cleaned = cleaned_sheet(index // max_data_rows + 1, index)
+                    row = json.loads(line)
+                    product_name, specification = split_product_spec(row.get("prdctSpecNm"))
+                    values = [
+                        row.get("rgstDt"), row.get("cntrctCorpNm"), row.get("prdctMakrNm"),
+                        row.get("prdctClsfcNoNm"), row.get("dtilPrdctClsfcNoNm"),
+                        str(row.get("prdctIdntNo") or ""), product_name, specification,
+                        _excel_number(row.get("cntrctPrceAmt")),
+                        row.get("prdctUnit"), str(row.get("shopngCntrctNo") or ""),
+                        row.get("cntrctDate"), row.get("cntrctBgnDate"), row.get("cntrctEndDate"),
+                        row.get("masYn"), row.get("regtCncelYn"),
+                    ]
+                    cleaned.write_row(index % max_data_rows + 1, 0, values)
+
+                keys = list(columns)
+
+                def raw_sheet(part, first_row):
+                    name = "품목등록원천" if part == 1 else f"품목등록원천_{part}"
+                    sheet = book.add_worksheet(name)
+                    sheet.freeze_panes(1, 0)
+                    portion = min(max_data_rows, max(row_count - first_row, 0))
+                    sheet.autofilter(0, 0, max(portion, 1), max(len(keys) - 1, 0))
+                    sheet.write_row(0, 0, keys, header_format)
+                    return sheet
+
+                raw_records.seek(0)
+                raw = raw_sheet(1, 0)
+                for index, line in enumerate(raw_records):
+                    if index and index % max_data_rows == 0:
+                        raw = raw_sheet(index // max_data_rows + 1, index)
+                    row = json.loads(line)
+                    raw.write_row(index % max_data_rows + 1, 0, [row.get(key) for key in keys])
+
+                summary = book.add_worksheet("월별등록집계")
+                summary.freeze_panes(1, 0)
+                summary.write_row(0, 0, ["등록월", "세부품명", "등록건수"], header_format)
+                for index, ((month, detail), count) in enumerate(sorted(monthly.items()), 1):
+                    label = f"{month[:4]}-{month[4:6]}" if len(month) == 6 else month
+                    summary.write_row(index, 0, [label, detail, count])
+                summary.autofilter(0, 0, max(len(monthly), 1), 2)
             output.seek(0)
             return output
         except BaseException:

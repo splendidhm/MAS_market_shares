@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.schemas import DashboardResponse
 from app.services.data_processor import DataProcessor
-from app.services.excel_exporter import create_excel, create_food_excel
-from app.services.food_report import report, sync_step
+from app.services.excel_exporter import create_excel, create_food_excel, create_registration_excel
+from app.services.food_report import DELIVERIES, REGISTRATIONS, report, sync_step
+from app.services.registrations import available_period, registration_report
 from app.services.quota_service import get_today_call_count
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
@@ -119,10 +120,67 @@ def sync_dashboard_cache(
     db: Session = Depends(get_db),
 ):
     start, end = _resolve_period_inputs(startMonth, endMonth, startDate, endDate)
-    state = sync_step(db, start, end, category, DAILY_CALL_LIMIT, refresh=force)
+    return _sync_collection(db, DELIVERIES, start, end, category, step, force)
+
+
+def _sync_collection(db, source, start, end, category, step, force):
+    state = sync_step(db, start, end, category, DAILY_CALL_LIMIT, refresh=force, source=source)
     while not step and not state["complete"]:
-        state = sync_step(db, start, end, category, DAILY_CALL_LIMIT)
+        state = sync_step(db, start, end, category, DAILY_CALL_LIMIT, source=source)
     return state
+
+
+@router.post("/registrations/sync")
+def sync_registrations(
+    startDate: str = Query(..., pattern=r"^\d{8}$"),
+    endDate: str = Query(..., pattern=r"^\d{8}$"),
+    category: str = Query("", max_length=100),
+    step: bool = False,
+    force: bool = False,
+    db: Session = Depends(get_db),
+):
+    start, end = available_period(startDate, endDate)
+    return _sync_collection(db, REGISTRATIONS, start, end, category, step, force)
+
+
+@router.get("/registrations")
+def get_registrations(
+    startDate: str = Query(..., pattern=r"^\d{8}$"),
+    endDate: str = Query(..., pattern=r"^\d{8}$"),
+    category: str = Query("", max_length=100),
+    company: str = "",
+    productName: str = "",
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    start, end = available_period(startDate, endDate)
+    return registration_report(db, start, end, category, company, productName, page, pageSize)
+
+
+@router.get("/registrations/excel")
+def download_registrations_excel(
+    startDate: str = Query(..., pattern=r"^\d{8}$"),
+    endDate: str = Query(..., pattern=r"^\d{8}$"),
+    category: str = Query("", max_length=100),
+    company: str = "",
+    productName: str = "",
+    db: Session = Depends(get_db),
+):
+    start, end = available_period(startDate, endDate)
+    excel_file = create_registration_excel(db, start, end, category, company, productName)
+
+    def chunks():
+        with excel_file:
+            while chunk := excel_file.read(65536):
+                yield chunk
+
+    filename = f"food_registrations_{start}_{end}.xlsx"
+    return StreamingResponse(
+        chunks(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 @router.get("/dashboard/usage")

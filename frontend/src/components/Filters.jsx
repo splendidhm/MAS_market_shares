@@ -17,7 +17,8 @@ function setPeriod(prev, period, value) {
   return {...prev, period, start_date: value, end_date: period === "day" ? value : prev.end_date};
 }
 
-export default function Filters({ categoriesFound, filters, setFilters, onSearch, onExcel, onSync }) {
+export default function Filters({ categoriesFound, filters, setFilters, onSearch, onExcel, onSync,
+  companyLabel = "납품업체 검색", productLabel = "제품명 검색" }) {
   return (
     <div className="bg-white border border-brand-200 rounded-xl p-4 shadow-sm space-y-4">
       <div className="flex flex-wrap items-center gap-3 text-sm">
@@ -52,7 +53,8 @@ export default function Filters({ categoriesFound, filters, setFilters, onSearch
           className="border border-brand-200 rounded-lg px-3 py-2"
         />
         <input
-          placeholder="납품업체 검색"
+          aria-label={companyLabel}
+          placeholder={companyLabel}
           value={filters.company}
           onChange={(e) =>
             setFilters((prev) => ({ ...prev, company: e.target.value }))
@@ -60,7 +62,8 @@ export default function Filters({ categoriesFound, filters, setFilters, onSearch
           className="border border-brand-200 rounded-lg px-3 py-2"
         />
         <input
-          placeholder="제품명 검색"
+          aria-label={productLabel}
+          placeholder={productLabel}
           value={filters.product_name}
           onChange={(e) =>
             setFilters((prev) => ({ ...prev, product_name: e.target.value }))
@@ -80,12 +83,12 @@ export default function Filters({ categoriesFound, filters, setFilters, onSearch
           >
             조회
           </button>
-          <button
+          {onExcel && <button
             onClick={onExcel}
             className="flex-1 bg-white text-brand-700 border border-brand-200 rounded-lg px-2 py-2 text-xs leading-none font-semibold whitespace-nowrap hover:bg-brand-100"
           >
             엑셀 다운로드
-          </button>
+          </button>}
         </div>
       </div>
 
