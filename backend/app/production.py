@@ -8,8 +8,8 @@ from fastapi.staticfiles import StaticFiles
 from app.main import app
 
 password = os.environ["MAS_PASSWORD"]
-if len(password) < 16 or not os.environ.get("DATABASE_URL", "").startswith("postgresql"):
-    raise RuntimeError("Set MAS_PASSWORD and a PostgreSQL DATABASE_URL")
+if not 4 <= len(password) <= 16 or not os.environ.get("DATABASE_URL", "").startswith("postgresql"):
+    raise RuntimeError("Set MAS_PASSWORD to 4-16 characters and provide a PostgreSQL DATABASE_URL")
 credential = base64.b64encode(("mas:" + password).encode())
 
 
