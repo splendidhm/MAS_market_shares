@@ -98,6 +98,9 @@ def create_food_excel(db, start, end, category="", company="", product=""):
             records.write(json.dumps(row, ensure_ascii=False) + "\n")
 
         result = report(db, start, end, category, company, product, on_record=collect)
+        # The report has finished reading the database. XLSX assembly can take
+        # several minutes, so release its read transaction before writing it.
+        db.rollback()
         if not result["complete"]:
             raise HTTPException(409, "선택 기간의 식품 DB 동기화를 완료해주세요.")
         output = TemporaryFile()

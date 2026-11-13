@@ -50,6 +50,7 @@ class MonthlyCleanSalesTest(unittest.TestCase):
                 self.row("2026-07-04", "", prdctAmt="0")]
         self.populate("20260701", "20260731", rows)
         book = self.workbook("20260701", "20260731")
+        self.assertFalse(self.db.in_transaction())
         self.assertEqual(book.sheetnames, ["업체별", "업체별품목", "품목별", "식품원천내역", "월별정제매출", "월별집계"])
         sheet = book["월별정제매출"]
         self.assertEqual(sheet.max_row, 5)
